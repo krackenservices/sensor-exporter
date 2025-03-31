@@ -12,8 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ncabatoff/gosensors"
+	"sensor-exporter/gosensors"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -58,7 +59,7 @@ func main() {
 
 	hddcollector := NewHddCollector(*hddtempAddress)
 	if err := hddcollector.Init(); err != nil {
-		log.Printf("error readding hddtemps: %v", err)
+		log.Printf("error reading hddtemps: %v", err)
 	}
 	prometheus.MustRegister(hddcollector)
 
@@ -66,7 +67,7 @@ func main() {
 	lmscollector.Init()
 	prometheus.MustRegister(lmscollector)
 
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
@@ -77,12 +78,10 @@ func main() {
 			</body>
 			</html>`))
 	})
-	http.ListenAndServe(*listenAddress, nil)
+	log.Fatal(http.ListenAndServe(*listenAddress, nil))
 }
 
-type (
-	LmSensorsCollector struct{}
-)
+type LmSensorsCollector struct{}
 
 func NewLmSensorsCollector() *LmSensorsCollector {
 	return &LmSensorsCollector{}
@@ -92,7 +91,6 @@ func (l *LmSensorsCollector) Init() {
 	gosensors.Init()
 }
 
-// Describe implements prometheus.Collector.
 func (l *LmSensorsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- fanspeedDesc
 	ch <- powerDesc
@@ -100,55 +98,41 @@ func (l *LmSensorsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- voltageDesc
 }
 
-// Collect implements prometheus.Collector.
 func (l *LmSensorsCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, chip := range gosensors.GetDetectedChips() {
 		chipName := chip.String()
 		adaptorName := chip.AdapterName()
 		for _, feature := range chip.GetFeatures() {
-			if strings.HasPrefix(feature.Name, "fan") {
-				ch <- prometheus.MustNewConstMetric(fanspeedDesc,
-					prometheus.GaugeValue,
-					feature.GetValue(),
-					feature.GetLabel(), chipName, adaptorName)
-			} else if strings.HasPrefix(feature.Name, "temp") {
-				ch <- prometheus.MustNewConstMetric(temperatureDesc,
-					prometheus.GaugeValue,
-					feature.GetValue(),
-					feature.GetLabel(), chipName, adaptorName)
-			} else if strings.HasPrefix(feature.Name, "in") {
-				ch <- prometheus.MustNewConstMetric(voltageDesc,
-					prometheus.GaugeValue,
-					feature.GetValue(),
-					feature.GetLabel(), chipName, adaptorName)
-			} else if strings.HasPrefix(feature.Name, "power") {
-				ch <- prometheus.MustNewConstMetric(powerDesc,
-					prometheus.GaugeValue,
-					feature.GetValue(),
-					feature.GetLabel(), chipName, adaptorName)
+			value := feature.GetValue()
+			label := feature.GetLabel()
+			switch {
+			case strings.HasPrefix(feature.Name, "fan"):
+				ch <- prometheus.MustNewConstMetric(fanspeedDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
+			case strings.HasPrefix(feature.Name, "temp"):
+				ch <- prometheus.MustNewConstMetric(temperatureDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
+			case strings.HasPrefix(feature.Name, "in"):
+				ch <- prometheus.MustNewConstMetric(voltageDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
+			case strings.HasPrefix(feature.Name, "power"):
+				ch <- prometheus.MustNewConstMetric(powerDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
 			}
 		}
 	}
 }
 
-type (
-	HddCollector struct {
-		address string
-		conn    net.Conn
-		buf     bytes.Buffer
-	}
+type HddCollector struct {
+	address string
+	conn    net.Conn
+	buf     bytes.Buffer
+}
 
-	HddTemperature struct {
-		Device             string
-		Id                 string
-		TemperatureCelsius float64
-	}
-)
+type HddTemperature struct {
+	Device             string
+	Id                 string
+	TemperatureCelsius float64
+}
 
 func NewHddCollector(address string) *HddCollector {
-	return &HddCollector{
-		address: address,
-	}
+	return &HddCollector{address: address}
 }
 
 func (h *HddCollector) Init() error {
@@ -166,17 +150,17 @@ func (h *HddCollector) readTempsFromConn() (string, error) {
 			return "", err
 		}
 	}
-
+	h.buf.Reset()
 	_, err := io.Copy(&h.buf, h.conn)
 	if err != nil {
-		return "", fmt.Errorf("Error reading from hddtemp socket: %v", err)
+		return "", fmt.Errorf("error reading from hddtemp socket: %v", err)
 	}
 	return h.buf.String(), nil
 }
 
 func (h *HddCollector) Close() error {
-	if err := h.conn.Close(); err != nil {
-		return fmt.Errorf("Error closing hddtemp socket: %v", err)
+	if h.conn != nil {
+		return h.conn.Close()
 	}
 	return nil
 }
@@ -184,15 +168,14 @@ func (h *HddCollector) Close() error {
 func parseHddTemps(s string) ([]HddTemperature, error) {
 	var hddtemps []HddTemperature
 	if len(s) < 1 || s[0] != '|' {
-		return nil, fmt.Errorf("Error parsing output from hddtemp: %s", s)
+		return nil, fmt.Errorf("error parsing output from hddtemp: %s", s)
 	}
 	for _, item := range strings.Split(s[1:len(s)-1], "||") {
 		hddtemp, err := parseHddTemp(item)
 		if err != nil {
-			return nil, fmt.Errorf("Error parsing output from hddtemp: %v", err)
-		} else {
-			hddtemps = append(hddtemps, hddtemp)
+			return nil, fmt.Errorf("error parsing hddtemp: %v", err)
 		}
+		hddtemps = append(hddtemps, hddtemp)
 	}
 	return hddtemps, nil
 }
@@ -200,32 +183,29 @@ func parseHddTemps(s string) ([]HddTemperature, error) {
 func parseHddTemp(s string) (HddTemperature, error) {
 	pieces := strings.Split(s, "|")
 	if len(pieces) != 4 {
-		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, expected 4 tokens: %s", s)
+		return HddTemperature{}, fmt.Errorf("invalid hddtemp format: %s", s)
 	}
 	dev, id, temp, unit := pieces[0], pieces[1], pieces[2], pieces[3]
 
 	if unit == "*" {
 		return HddTemperature{Device: dev, Id: id, TemperatureCelsius: -1}, nil
 	}
-
 	if unit != "C" {
-		return HddTemperature{}, fmt.Errorf("error parsing item from hddtemp, I only speak Celsius", s)
+		return HddTemperature{}, fmt.Errorf("unsupported unit from hddtemp: %s", s)
 	}
 
 	ftemp, err := strconv.ParseFloat(temp, 64)
 	if err != nil {
-		return HddTemperature{}, fmt.Errorf("Error parsing temperature as float: %s", temp)
+		return HddTemperature{}, fmt.Errorf("error parsing temperature as float: %s", temp)
 	}
 
 	return HddTemperature{Device: dev, Id: id, TemperatureCelsius: ftemp}, nil
 }
 
-// Describe implements prometheus.Collector.
-func (e *HddCollector) Describe(ch chan<- *prometheus.Desc) {
+func (h *HddCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- hddTempDesc
 }
 
-// Collect implements prometheus.Collector.
 func (h *HddCollector) Collect(ch chan<- prometheus.Metric) {
 	tempsString, err := h.readTempsFromConn()
 	if err != nil {
@@ -237,12 +217,8 @@ func (h *HddCollector) Collect(ch chan<- prometheus.Metric) {
 		log.Printf("error parsing temps from hddtemp daemon: %v", err)
 		return
 	}
-
 	for _, ht := range hddtemps {
-		ch <- prometheus.MustNewConstMetric(hddTempDesc,
-			prometheus.GaugeValue,
-			ht.TemperatureCelsius,
-			ht.Device,
-			ht.Id)
+		ch <- prometheus.MustNewConstMetric(hddTempDesc, prometheus.GaugeValue, ht.TemperatureCelsius, ht.Device, ht.Id)
 	}
 }
+
