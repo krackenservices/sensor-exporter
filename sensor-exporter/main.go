@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"sensor-exporter/gosensors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"sensor-exporter/gosensors"
 )
 
 var (
@@ -39,7 +39,7 @@ var (
 	temperatureDesc = prometheus.NewDesc(
 		"sensor_lm_temperature_celsius",
 		"temperature in celsius",
-		[]string{"temptype", "chip", "adaptor"},
+		[]string{"name", "temptype", "chip", "adaptor"},
 		nil)
 
 	hddTempDesc = prometheus.NewDesc(
@@ -51,17 +51,17 @@ var (
 
 func main() {
 	var (
-		listenAddress  = flag.String("web.listen-address", ":9255", "Address on which to expose metrics and web interface.")
-		metricsPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-		hddtempAddress = flag.String("hddtemp-address", "localhost:7634", "Address to fetch hdd metrics from.")
+		listenAddress = flag.String("web.listen-address", ":9255", "Address on which to expose metrics and web interface.")
+		metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		//hddtempAddress = flag.String("hddtemp-address", "localhost:7634", "Address to fetch hdd metrics from.")
 	)
 	flag.Parse()
 
-	hddcollector := NewHddCollector(*hddtempAddress)
-	if err := hddcollector.Init(); err != nil {
-		log.Printf("error reading hddtemps: %v", err)
-	}
-	prometheus.MustRegister(hddcollector)
+	//hddcollector := NewHddCollector(*hddtempAddress)
+	//if err := hddcollector.Init(); err != nil {
+	//	log.Printf("error reading hddtemps: %v", err)
+	//}
+	//prometheus.MustRegister(hddcollector)
 
 	lmscollector := NewLmSensorsCollector()
 	lmscollector.Init()
@@ -109,7 +109,7 @@ func (l *LmSensorsCollector) Collect(ch chan<- prometheus.Metric) {
 			case strings.HasPrefix(feature.Name, "fan"):
 				ch <- prometheus.MustNewConstMetric(fanspeedDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
 			case strings.HasPrefix(feature.Name, "temp"):
-				ch <- prometheus.MustNewConstMetric(temperatureDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
+				ch <- prometheus.MustNewConstMetric(temperatureDesc, prometheus.GaugeValue, value, feature.Name, label, chipName, adaptorName)
 			case strings.HasPrefix(feature.Name, "in"):
 				ch <- prometheus.MustNewConstMetric(voltageDesc, prometheus.GaugeValue, value, label, chipName, adaptorName)
 			case strings.HasPrefix(feature.Name, "power"):
@@ -221,4 +221,3 @@ func (h *HddCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(hddTempDesc, prometheus.GaugeValue, ht.TemperatureCelsius, ht.Device, ht.Id)
 	}
 }
-
